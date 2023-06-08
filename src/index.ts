@@ -50,25 +50,25 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 	}
 
 	public async get(key: Key): Promise<Payload | undefined> {
-		await this.doInitialHydrate();
 		this.logKey('get', `TachyonExpireCache get key: ${key}`);
-		this.cleanExpired();
+		await this.doInitialHydrate();
+		await this.cleanExpired();
 		return this.cache.get(key)?.data;
 	}
 
 	public async set(key: Key, data: Payload, expires?: Date | undefined): Promise<void> {
-		await this.doInitialHydrate();
 		const expireTs: number | undefined = expires?.getTime() ?? (this.defaultExpireMs && Date.now() + this.defaultExpireMs);
 		this.logKey('set', `TachyonExpireCache set key: ${key}, expireTs: ${expireTs}`);
 		this.cache.set(key, {data, expires: expireTs});
+		await this.doInitialHydrate();
 		await this.driver.store(this.cache);
 	}
 
 	public async delete(key: Key): Promise<boolean> {
-		await this.doInitialHydrate();
 		this.logKey('delete', `TachyonExpireCache delete key: ${key}`);
 		const isDeleted = this.cache.delete(key);
 		if (isDeleted) {
+			await this.doInitialHydrate();
 			await this.driver.store(this.cache);
 		}
 		return isDeleted;

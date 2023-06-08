@@ -3,28 +3,38 @@ import 'mocha';
 import * as chai from 'chai';
 import * as chaiAsPromised from 'chai-as-promised';
 import {CacheMap, TachyonExpireCache} from '../src';
-import {IPersistSerializer, MemoryStorageDriver} from 'tachyon-drive';
+import {FileStorageDriver} from 'tachyon-drive-node-fs';
 import {ICacheOrAsync} from '@avanio/expire-cache';
+import {IPersistSerializer} from 'tachyon-drive';
 import {z} from 'zod';
 
 chai.use(chaiAsPromised);
 
 const expect = chai.expect;
 
-const mapSerializer: IPersistSerializer<CacheMap<string, string>, string> = {
-	serialize: (data: CacheMap<string, string>) => JSON.stringify(Array.from(data)),
-	deserialize: (buffer: string) => new Map(JSON.parse(buffer)),
-	validator: (data: CacheMap<string, string>) => z.map(z.string(), z.string()).safeParse(data).success,
+function cachePayloadSchema<T>(data: z.Schema<T>) {
+	return z.object({
+		data,
+		expires: z.number().optional(),
+	});
+}
+
+const bufferSerializer: IPersistSerializer<CacheMap<string, string>, Buffer> = {
+	serialize: (data: CacheMap<string, string>) => Buffer.from(JSON.stringify(Array.from(data))),
+	deserialize: (buffer: Buffer) => new Map(JSON.parse(buffer.toString())),
+	validator: (data: CacheMap<string, string>) => z.map(z.string(), cachePayloadSchema(z.string())).safeParse(data).success,
 };
 
-const driver = new MemoryStorageDriver('MemoryStorageDriver', mapSerializer, null);
+const driver = new FileStorageDriver('FileStorageDriver', './cache-test.json', bufferSerializer);
 
 let cache: ICacheOrAsync<string>;
 
 describe('TachyonExpireCache', () => {
 	before(async () => {
+		await driver.clear();
 		cache = new TachyonExpireCache<string, string>(driver);
 	});
+
 	it('should return undefined value if not cached yet', async () => {
 		await expect(cache.get('key')).to.eventually.be.undefined;
 	});
@@ -52,5 +62,13 @@ describe('TachyonExpireCache', () => {
 		await cache.set('key', 'value');
 		await cache.clear();
 		await expect(cache.get('key')).to.eventually.be.undefined;
+	});
+	it('should restore state and return cached value', async () => {
+		await cache.set('key', 'value');
+		cache = new TachyonExpireCache<string, string>(driver);
+		await expect(cache.get('key')).to.eventually.be.equal('value');
+	});
+	after(async () => {
+		await driver.clear();
 	});
 });
