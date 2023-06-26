@@ -68,6 +68,13 @@ describe('TachyonExpireCache', () => {
 		cache = new TachyonExpireCache<string, string>(driver);
 		await expect(cache.get('key')).to.eventually.be.equal('value');
 	});
+	it('should return valid entry expire Date', async () => {
+		const expires = new Date(Date.now() + 1000);
+		await cache.set('key', 'value', expires);
+		const value = await cache.expires('key');
+		expect(value?.getTime()).to.be.eq(expires.getTime());
+		await cache.clear();
+	});
 	after(async () => {
 		await driver.clear();
 	});

@@ -10,6 +10,7 @@ const defaultLogMap = {
 	clear: LogLevel.None,
 	constructor: LogLevel.None,
 	delete: LogLevel.None,
+	expires: LogLevel.None,
 	get: LogLevel.None,
 	has: LogLevel.None,
 	set: LogLevel.None,
@@ -79,6 +80,14 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 		this.logKey('has', `TachyonExpireCache has key: ${key}`);
 		this.cleanExpired();
 		return this.cache.has(key);
+	}
+
+	public async expires(key: Key): Promise<Date | undefined> {
+		await this.doInitialHydrate();
+		this.logKey('expires', `TachyonExpireCache get expire key: ${key}`);
+		this.cleanExpired();
+		const entry = this.cache.get(key);
+		return entry?.expires ? new Date(entry.expires) : undefined;
 	}
 
 	public clear(): Promise<void> {
