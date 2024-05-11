@@ -1,10 +1,17 @@
-import {IAsyncCache, IAsyncCacheOnClearCallback} from '@avanio/expire-cache';
-import {ILoggerLike, LogLevel, LogMapping, MapLogger} from '@avanio/logger-like';
-import {IStorageDriver} from 'tachyon-drive';
+import {type IAsyncCache, type IAsyncCacheOnClearCallback} from '@avanio/expire-cache';
+import {type ILoggerLike, LogLevel, type LogMapping, MapLogger} from '@avanio/logger-like';
+import {type IStorageDriver} from 'tachyon-drive';
 
-function toAsyncIterableIterator<T>(iterable: IterableIterator<T>): AsyncIterableIterator<T> {
+/**
+ * IterableIterator to AsyncIterableIterator
+ * @param callIterable get the iterable iterator
+ * @param initialize callback to initialize storage driver (before get the iterable)
+ * @returns AsyncIterableIterator
+ */
+function toAsyncIterableIterator<T>(callIterable: () => IterableIterator<T>, initialize: () => Promise<void>): AsyncIterableIterator<T> {
 	return (async function* () {
-		for (const value of iterable) {
+		await initialize(); // ensure the storage driver is hydrated
+		for (const value of callIterable()) {
 			yield value;
 		}
 	})();
@@ -22,11 +29,14 @@ const defaultLogMap = {
 	expires: LogLevel.None,
 	get: LogLevel.None,
 	has: LogLevel.None,
+	hydrate: LogLevel.None,
 	keys: LogLevel.None,
+	rebuild: LogLevel.None,
 	set: LogLevel.None,
 	size: LogLevel.None,
+	store: LogLevel.None,
 	values: LogLevel.None,
-} as const;
+} satisfies LogMapping;
 
 export type ExpireCacheLogMapType = LogMapping<keyof typeof defaultLogMap>;
 
@@ -40,76 +50,96 @@ export type CacheMap<Payload, Key = string> = Map<Key, CachePayload<Payload>>;
  * Data is stored as a ```CacheMap<Payload, Key = string>``` if building validation for serialization.
  */
 export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireCacheLogMapType> implements IAsyncCache<Payload, Key> {
-	private cache = new Map<Key, {data: Payload; expires: number | undefined}>();
+	public readonly name: string;
+	private cache = new Map<Key, CachePayload<Payload>>();
 	private defaultExpireMs: undefined | number;
-	private driver: IStorageDriver<Map<Key, {data: Payload; expires: number | undefined}>>;
+	private driver: IStorageDriver<CacheMap<Payload, Key>>;
 	private isHydrated = false;
+	private isWriting = false;
+	private hydratePromise: Promise<CacheMap<Payload, Key> | undefined> | CacheMap<Payload, Key> | undefined;
 	private onClearCallbacks = new Set<IAsyncCacheOnClearCallback<Payload, Key>>();
 
 	constructor(
-		driver: IStorageDriver<Map<Key, {data: Payload; expires: number | undefined}>>,
+		name: string,
+		driver: IStorageDriver<CacheMap<Payload, Key>>,
 		logger?: ILoggerLike,
 		logMapping?: ExpireCacheLogMapType,
 		defaultExpireMs?: number,
 	) {
 		super(logger, Object.assign({}, defaultLogMap, logMapping));
+		this.name = name;
 		this.driver = driver;
 		this.defaultExpireMs = defaultExpireMs;
-		this.driver.onUpdate((data) => {
-			if (data) {
-				this.cache = data;
+		this.driver.on('update', (data) => {
+			if (!this.isWriting && data) {
+				this.handleRebuild(data, 'update');
 			}
 		});
+		this.doInitialHydrate = this.doInitialHydrate.bind(this);
 	}
 
 	public onClear(callback: IAsyncCacheOnClearCallback<Payload, Key>): void {
 		this.onClearCallbacks.add(callback);
 	}
 
+	/**
+	 * Get an AsyncIterableIterator of Cache entries
+	 * @returns AsyncIterableIterator<[Key, Payload]>
+	 * @example
+	 * for await (const [key, value] of cache.entries()) {}
+	 */
 	public entries(): AsyncIterableIterator<[Key, Payload]> {
-		this.logKey('entries', 'TachyonExpireCache entries');
-		return toAsyncIterableIterator(this.buildFlatDataMap().entries());
+		this.logMessage('entries', 'entries');
+		return toAsyncIterableIterator(() => this.buildFlatDataMap().entries(), this.doInitialHydrate);
 	}
 
+	/**
+	 * Get an AsyncIterableIterator of Cache keys
+	 * @returns AsyncIterableIterator<Key>
+	 * @example
+	 * for await (const key of cache.keys()) {}
+	 */
 	public keys(): AsyncIterableIterator<Key> {
-		this.logKey('keys', 'TachyonExpireCache keys');
-		return toAsyncIterableIterator(this.cache.keys());
+		this.logMessage('keys', 'keys');
+		return toAsyncIterableIterator(() => this.cache.keys(), this.doInitialHydrate);
 	}
 
+	/**
+	 * Get an AsyncIterableIterator of Cache values
+	 * @returns AsyncIterableIterator<Payload>
+	 * @example
+	 * for await (const value of cache.values()) {}
+	 */
 	public values(): AsyncIterableIterator<Payload> {
-		this.logKey('values', 'TachyonExpireCache values');
-		return toAsyncIterableIterator(this.buildFlatDataMap().values());
-	}
-
-	private buildFlatDataMap(): Map<Key, Payload> {
-		return new Map(Array.from(this.cache.entries()).map(([key, value]) => [key, value.data]));
+		this.logMessage('values', 'values');
+		return toAsyncIterableIterator(() => this.buildFlatDataMap().values(), this.doInitialHydrate);
 	}
 
 	public async get(key: Key): Promise<Payload | undefined> {
-		this.logKey('get', `TachyonExpireCache get key: ${key}`);
 		await this.doInitialHydrate();
+		this.logMessage('get', `get with key: '${key}'`);
 		await this.cleanExpired();
 		return this.cache.get(key)?.data;
 	}
 
 	public async set(key: Key, data: Payload, expires?: Date | undefined): Promise<void> {
-		const expireTs: number | undefined = expires?.getTime() ?? (this.defaultExpireMs && Date.now() + this.defaultExpireMs);
-		this.logKey('set', `TachyonExpireCache set key: ${key}, expireTs: ${expireTs}`);
-		this.cache.set(key, {data, expires: expireTs});
 		await this.doInitialHydrate();
-		await this.driver.store(this.cache);
+		const expireTs: number | undefined = expires?.getTime() ?? (this.defaultExpireMs && Date.now() + this.defaultExpireMs);
+		this.logMessage('set', `set key: '${key}', expireTs: ${expireTs}`);
+		this.cache.set(key, {data, expires: expireTs});
+		await this.handleStore();
 	}
 
 	public async delete(key: Key): Promise<boolean> {
-		this.logKey('delete', `TachyonExpireCache delete key: ${key}`);
+		await this.doInitialHydrate();
+		this.logMessage('delete', `delete key: '${key}'`);
 		const value = this.cache.get(key);
 		if (value) {
-			const deleteData = new Map<Key, Payload>();
-			deleteData.set(key, value.data);
 			const isDeleted = this.cache.delete(key);
-			await this.doInitialHydrate();
-			await this.driver.store(this.cache);
-			this.onClearCallbacks.forEach((callback) => callback(deleteData));
+			if (isDeleted) {
+				await this.handleStore();
+				await this.notifyClear(new Map<Key, Payload>([[key, value.data]]));
+			}
 			return isDeleted;
 		}
 		return false;
@@ -117,41 +147,67 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 
 	public async has(key: Key): Promise<boolean> {
 		await this.doInitialHydrate();
-		this.logKey('has', `TachyonExpireCache has key: ${key}`);
+		this.logMessage('has', `has key: '${key}'`);
 		this.cleanExpired();
 		return this.cache.has(key);
 	}
 
 	public async expires(key: Key): Promise<Date | undefined> {
 		await this.doInitialHydrate();
-		this.logKey('expires', `TachyonExpireCache get expire key: ${key}`);
+		this.logMessage('expires', `get expire key: '${key}'`);
 		this.cleanExpired();
 		const entry = this.cache.get(key);
 		return entry?.expires ? new Date(entry.expires) : undefined;
 	}
 
-	public clear(): Promise<void> {
-		this.logKey('clear', `TachyonExpireCache clear`);
+	public async clear(): Promise<void> {
+		await this.doInitialHydrate();
+		this.logMessage('clear', `clear`);
 		const deleteData = this.buildFlatDataMap();
 		this.cache.clear();
-		this.onClearCallbacks.forEach((callback) => callback(deleteData));
-		return this.driver.store(this.cache);
+		await this.notifyClear(deleteData);
+		return this.handleStore();
 	}
 
 	public async size(): Promise<number> {
 		await this.doInitialHydrate();
-		this.logKey('size', `TachyonExpireCache size: ${this.cache.size}`);
+		this.logMessage('size', `size: ${this.cache.size}`);
 		return this.cache.size;
+	}
+
+	private buildFlatDataMap(): Map<Key, Payload> {
+		return new Map(Array.from(this.cache.entries()).map(([key, value]) => [key, value.data]));
 	}
 
 	private async doInitialHydrate(): Promise<void> {
 		if (!this.isHydrated) {
-			const data = await this.driver.hydrate();
+			// only hydrate data once
+			if (!this.hydratePromise) {
+				this.logMessage('hydrate', 'hydrate');
+				this.hydratePromise = this.driver.hydrate();
+			}
+			const data = await this.hydratePromise;
 			if (data) {
-				this.cache = data;
+				this.handleRebuild(data, 'initial');
 			}
 			this.isHydrated = true;
+			this.hydratePromise = undefined;
 		}
+	}
+
+	private handleRebuild(data: CacheMap<Payload, Key>, type: 'initial' | 'update') {
+		this.logMessage('rebuild', `${type} rebuild Cache Map`);
+		this.cache = data;
+	}
+
+	private async handleStore(): Promise<void> {
+		this.logMessage('store', 'store');
+		this.isWriting = true; // lock updates from driver as we are writing
+		await this.driver.store(this.cache);
+		// release the write lock after 100ms
+		setTimeout(() => {
+			this.isWriting = false;
+		}, 100);
 	}
 
 	private async cleanExpired(): Promise<void> {
@@ -164,9 +220,17 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 			}
 		}
 		if (deleteData.size > 0) {
-			this.logKey('cleanExpired', `TachyonExpireCache expired count: ${deleteData.size}`);
-			await this.driver.store(this.cache);
-			this.onClearCallbacks.forEach((callback) => callback(deleteData));
+			this.logMessage('cleanExpired', `expired count: ${deleteData.size}`);
+			await this.handleStore();
+			await this.notifyClear(deleteData);
 		}
+	}
+
+	private async notifyClear(deleteData: Map<Key, Payload>): Promise<void> {
+		await Promise.all(Array.from(this.onClearCallbacks).map((callback) => callback(deleteData)));
+	}
+
+	private logMessage(key: keyof ExpireCacheLogMapType, message: string): void {
+		this.logKey(key, `TachyonExpireCache[${this.name}]: ${message}`);
 	}
 }

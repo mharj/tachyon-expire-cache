@@ -38,7 +38,7 @@ const bufferSerializer: IPersistSerializer<CacheMap<string, string>, Buffer> = {
 	validator: (data: CacheMap<string, string>) => z.map(z.string(), cachePayloadSchema(z.string())).safeParse(data).success,
 };
 
-const cache = new TachyonExpireCache<string, string>(new FileStorageDriver('FileStorageDriver', './cache.json', bufferSerializer));
+const cache = new TachyonExpireCache<string, string>('Some-Cache-Name', new FileStorageDriver('FileStorageDriver', './cache.json', bufferSerializer));
 
 await cache.set('key', 'value', new Date(Date.now() + 1000));
 
