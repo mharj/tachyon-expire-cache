@@ -3,8 +3,17 @@
     "version": "0.5.0",
     "description": "tachyon drive enabled async cache with expire support",
     "main": "./dist/index.js",
+    "module": "./dist/index.mjs",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "require": "./dist/index.js",
+            "import": "./dist/index.mjs",
+            "types": "./dist/index.d.ts"
+        }
+    },
     "scripts": {
-        "build": "tsc",
+        "build": "tsup src/index.ts --minify --sourcemap --format cjs,esm --dts --clean",
         "prepublishOnly": "npm run build",
         "test": "mocha",
         "lint": "eslint src"
@@ -43,12 +52,12 @@
         "@types/chai": "^4.3.16",
         "@types/chai-as-promised": "^7.1.8",
         "@types/mocha": "^10.0.6",
-        "@types/node": "^16.18.97",
+        "@types/node": "^18.19.33",
         "@types/sinon": "^17.0.3",
         "@typescript-eslint/eslint-plugin": "^7.8.0",
         "@typescript-eslint/parser": "^7.8.0",
         "chai": "^4.4.1",
-        "chai-as-promised": "^7.1.1",
+        "chai-as-promised": "^7.1.2",
         "eslint": "^8.57.0",
         "eslint-config-prettier": "^9.1.0",
         "eslint-config-standard": "^17.1.0",
@@ -58,14 +67,15 @@
         "mocha": "^10.4.0",
         "prettier": "^3.2.5",
         "sinon": "^17.0.2",
-        "tachyon-drive-node-fs": "^0.5.1",
+        "tachyon-drive-node-fs": "^0.6.0",
         "ts-node": "^10.9.2",
+        "tsup": "^8.0.2",
         "typescript": "^5.4.5",
         "zod": "^3.23.8"
     },
     "dependencies": {
         "@avanio/expire-cache": "^0.3.3",
         "@avanio/logger-like": "^0.1.1",
-        "tachyon-drive": "^0.5.1"
+        "tachyon-drive": "^0.6.0"
     }
 }

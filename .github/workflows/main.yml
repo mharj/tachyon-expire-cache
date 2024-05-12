@@ -20,14 +20,17 @@ jobs:
     steps:
       - uses: dcarbone/install-jq-action@v2
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 8
       - uses: actions/setup-node@v4
         with:
           node-version: '18.x'
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm ci
-      - run: npm test
-      - run: npm run lint
+      - run: pnpm i
+      - run: pnpm test
+      - run: pnpm run lint
 
       - name: Read package information
         run: |
@@ -52,7 +55,7 @@ jobs:
 
       # npm publish when PR done
       - name: Publish ${{env.PACKAGE_NAME}} ${{env.PACKAGE_VERSION}}
-        run: npm publish --access public
+        run: pnpm publish --access public
         if: |
           github.ref == 'refs/heads/main' &&
           env.NPM_TOKEN != '' &&

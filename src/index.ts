@@ -1,6 +1,6 @@
 import {type IAsyncCache, type IAsyncCacheOnClearCallback} from '@avanio/expire-cache';
 import {type ILoggerLike, LogLevel, type LogMapping, MapLogger} from '@avanio/logger-like';
-import {type IStorageDriver} from 'tachyon-drive';
+import {type IStorageDriver, TachyonBandwidth} from 'tachyon-drive';
 
 /**
  * IterableIterator to AsyncIterableIterator
@@ -23,6 +23,7 @@ function toAsyncIterableIterator<T>(callIterable: () => IterableIterator<T>, ini
 const defaultLogMap = {
 	cleanExpired: LogLevel.None,
 	clear: LogLevel.None,
+	close: LogLevel.None,
 	constructor: LogLevel.None,
 	delete: LogLevel.None,
 	entries: LogLevel.None,
@@ -30,11 +31,13 @@ const defaultLogMap = {
 	get: LogLevel.None,
 	has: LogLevel.None,
 	hydrate: LogLevel.None,
+	init: LogLevel.None,
 	keys: LogLevel.None,
 	rebuild: LogLevel.None,
 	set: LogLevel.None,
 	size: LogLevel.None,
 	store: LogLevel.None,
+	update: LogLevel.None,
 	values: LogLevel.None,
 } satisfies LogMapping;
 
@@ -43,6 +46,12 @@ export type ExpireCacheLogMapType = LogMapping<keyof typeof defaultLogMap>;
 export type CachePayload<Payload> = {data: Payload; expires: number | undefined};
 
 export type CacheMap<Payload, Key = string> = Map<Key, CachePayload<Payload>>;
+
+export type TachyonExpireCacheOptions = {
+	logger?: ILoggerLike;
+	logMapping?: ExpireCacheLogMapType;
+	defaultExpireMs?: number;
+};
 
 /**
  * TachyonExpireCache implements IAsyncCache using a Tachyon storage driver to persist the cache.
@@ -57,29 +66,42 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 	private isHydrated = false;
 	private isWriting = false;
 	private hydratePromise: Promise<CacheMap<Payload, Key> | undefined> | CacheMap<Payload, Key> | undefined;
-	private onClearCallbacks = new Set<IAsyncCacheOnClearCallback<Payload, Key>>();
+	private onClearCallbacks: (IAsyncCacheOnClearCallback<Payload, Key> | undefined)[] = [];
 
-	constructor(
-		name: string,
-		driver: IStorageDriver<CacheMap<Payload, Key>>,
-		logger?: ILoggerLike,
-		logMapping?: ExpireCacheLogMapType,
-		defaultExpireMs?: number,
-	) {
+	constructor(name: string, driver: IStorageDriver<CacheMap<Payload, Key>>, {logger, logMapping, defaultExpireMs}: TachyonExpireCacheOptions = {}) {
 		super(logger, Object.assign({}, defaultLogMap, logMapping));
 		this.name = name;
 		this.driver = driver;
 		this.defaultExpireMs = defaultExpireMs;
-		this.driver.on('update', (data) => {
+		this.driver.on('update', async (data) => {
 			if (!this.isWriting && data) {
-				this.handleRebuild(data, 'update');
+				try {
+					await this.handleUpdate(data);
+				} catch (error) {
+					this.logMessage('update', `update error: ${error}`);
+				}
 			}
 		});
 		this.doInitialHydrate = this.doInitialHydrate.bind(this);
 	}
 
-	public onClear(callback: IAsyncCacheOnClearCallback<Payload, Key>): void {
-		this.onClearCallbacks.add(callback);
+	/**
+	 * Add a callback to be called when the cache is cleared
+	 * @param callback - the callback to call when the cache is cleared
+	 * @returns number - callback index to use for offClear(index)
+	 */
+	public onClear(callback: IAsyncCacheOnClearCallback<Payload, Key>): number {
+		const index = this.onClearCallbacks.length;
+		this.onClearCallbacks.push(callback);
+		return index;
+	}
+
+	/**
+	 * Remove a callback that was added with onClear
+	 * @param index - the index of the callback to remove
+	 */
+	public offClear(index: number): void {
+		this.onClearCallbacks[index] = undefined;
 	}
 
 	/**
@@ -115,21 +137,41 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 		return toAsyncIterableIterator(() => this.buildFlatDataMap().values(), this.doInitialHydrate);
 	}
 
+	/**
+	 * Get a value from the cache
+	 * - cleanExpires: TachyonBandwidth.Small (small or higher driver bandwidth)
+	 * @param key - the Cache key to get
+	 * @returns Promise<Payload | undefined> - resolves with the value of the key or undefined if the key does not exist
+	 */
 	public async get(key: Key): Promise<Payload | undefined> {
 		await this.doInitialHydrate();
 		this.logMessage('get', `get with key: '${key}'`);
-		await this.cleanExpired();
+		await this.cleanExpired(TachyonBandwidth.Small);
 		return this.cache.get(key)?.data;
 	}
 
+	/**
+	 * Set a key in the cache
+	 * - stores: TachyonBandwidth.VerySmall (any driver bandwidth)
+	 * @param key - the Cache key to set
+	 * @param data - the data to set for the key
+	 * @param expires - the expiration date of the key (optional)
+	 * @returns Promise<void> - resolves when the key is set
+	 */
 	public async set(key: Key, data: Payload, expires?: Date | undefined): Promise<void> {
 		await this.doInitialHydrate();
 		const expireTs: number | undefined = expires?.getTime() ?? (this.defaultExpireMs && Date.now() + this.defaultExpireMs);
 		this.logMessage('set', `set key: '${key}', expireTs: ${expireTs}`);
 		this.cache.set(key, {data, expires: expireTs});
-		await this.handleStore();
+		await this.handleStore(TachyonBandwidth.VerySmall);
 	}
 
+	/**
+	 * Delete a key from the cache
+	 * - stores: TachyonBandwidth.VerySmall (any driver bandwidth)
+	 * @param key - the Cache key to delete
+	 * @returns Promise<boolean> - resolves with true if the key was deleted
+	 */
 	public async delete(key: Key): Promise<boolean> {
 		await this.doInitialHydrate();
 		this.logMessage('delete', `delete key: '${key}'`);
@@ -137,7 +179,7 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 		if (value) {
 			const isDeleted = this.cache.delete(key);
 			if (isDeleted) {
-				await this.handleStore();
+				await this.handleStore(TachyonBandwidth.VerySmall);
 				await this.notifyClear(new Map<Key, Payload>([[key, value.data]]));
 			}
 			return isDeleted;
@@ -145,34 +187,69 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 		return false;
 	}
 
+	/**
+	 * Check if a key exists in the cache
+	 * - cleanExpires: TachyonBandwidth.Normal (normal or higher driver bandwidth)
+	 * @param key - the Cache key to check for
+	 * @returns Promise<boolean> - resolves with true if the key exists in the cache
+	 */
 	public async has(key: Key): Promise<boolean> {
 		await this.doInitialHydrate();
 		this.logMessage('has', `has key: '${key}'`);
-		this.cleanExpired();
+		await this.cleanExpired(TachyonBandwidth.Normal);
 		return this.cache.has(key);
 	}
 
+	/**
+	 * Get the expiration date of a key
+	 * - cleanExpires: TachyonBandwidth.Normal (normal or higher driver bandwidth)
+	 * @param key - the Cache key to get the expiration date for
+	 * @returns Promise<Date | undefined> - resolves with the expiration date of the key or undefined if the key does not expire
+	 */
 	public async expires(key: Key): Promise<Date | undefined> {
 		await this.doInitialHydrate();
 		this.logMessage('expires', `get expire key: '${key}'`);
-		this.cleanExpired();
+		await this.cleanExpired(TachyonBandwidth.Normal);
 		const entry = this.cache.get(key);
 		return entry?.expires ? new Date(entry.expires) : undefined;
 	}
 
+	/**
+	 * Clear the cache
+	 * - stores: TachyonBandwidth.VerySmall (any driver bandwidth)
+	 * @returns Promise<void> - resolves when the cache is cleared
+	 */
 	public async clear(): Promise<void> {
 		await this.doInitialHydrate();
-		this.logMessage('clear', `clear`);
 		const deleteData = this.buildFlatDataMap();
+		this.logMessage('clear', `clear: ${deleteData.size} keys`);
 		this.cache.clear();
 		await this.notifyClear(deleteData);
-		return this.handleStore();
+		return this.handleStore(TachyonBandwidth.VerySmall);
 	}
 
 	public async size(): Promise<number> {
 		await this.doInitialHydrate();
 		this.logMessage('size', `size: ${this.cache.size}`);
 		return this.cache.size;
+	}
+
+	/**
+	 * Close the cache
+	 * @returns Promise<void> - resolves when the cache is closed
+	 */
+	public async close(): Promise<void> {
+		this.logMessage('close', 'close cache');
+		await this.driver.unload();
+	}
+
+	/**
+	 * Initialize the cache (else do lazy initialization on first call)
+	 */
+	public async init(): Promise<void> {
+		this.logMessage('init', 'initialize cache');
+		await this.driver.init();
+		await this.doInitialHydrate();
 	}
 
 	private buildFlatDataMap(): Map<Key, Payload> {
@@ -188,20 +265,74 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 			}
 			const data = await this.hydratePromise;
 			if (data) {
-				this.handleRebuild(data, 'initial');
+				this.handleRebuild(data);
 			}
 			this.isHydrated = true;
 			this.hydratePromise = undefined;
+			// if the driver has a bandwidth of VerySmall, we do clean on startup
+			if (this.driver.bandwidth === TachyonBandwidth.VerySmall) {
+				await this.cleanExpired(TachyonBandwidth.VerySmall);
+			}
 		}
 	}
 
-	private handleRebuild(data: CacheMap<Payload, Key>, type: 'initial' | 'update') {
-		this.logMessage('rebuild', `${type} rebuild Cache Map`);
+	/**
+	 * Handle the update event from the driver and merge the data into the cache
+	 * @param data - the data to update the cache with
+	 */
+	private async handleUpdate(data: CacheMap<Payload, Key>) {
+		let isModified = false;
+		for (const [key, value] of data.entries()) {
+			const cacheValue = this.cache.get(key);
+			// only update if the value is undefined or the expires value has changed
+			if (!cacheValue || cacheValue.expires !== value.expires) {
+				isModified = true;
+				this.cache.set(key, value);
+			}
+		}
+		if (isModified) {
+			this.logMessage('update', 'update Cache Map');
+			await this.handleStore(TachyonBandwidth.VerySmall);
+		}
+	}
+
+	private handleRebuild(data: CacheMap<Payload, Key>) {
+		this.logMessage('rebuild', `hydrate rebuild Cache Map: size=${data.size}`);
 		this.cache = data;
 	}
 
-	private async handleStore(): Promise<void> {
-		this.logMessage('store', 'store');
+	/**
+	 * this function will handle the store operation
+	 * - if the bandwidth is VerySmall, it will do cleanup to expired data (minimize write operations)
+	 * @param limit - the bandwidth limit to use for the store operation
+	 */
+	private async handleStore(limit: TachyonBandwidth): Promise<void> {
+		const deleteData = this.handleExpires();
+		if (this.testBandwidth(limit)) {
+			await this.writeStore();
+		}
+		if (deleteData.size > 0) {
+			this.logMessage('cleanExpired', `expired count: ${deleteData.size}`);
+			await this.notifyClear(deleteData);
+		}
+	}
+
+	private async cleanExpired(limit: TachyonBandwidth): Promise<void> {
+		const deleteData = this.handleExpires();
+		if (deleteData.size > 0) {
+			this.logMessage('cleanExpired', `expired count: ${deleteData.size}`);
+			if (this.testBandwidth(limit)) {
+				await this.writeStore();
+			}
+			await this.notifyClear(deleteData);
+		}
+	}
+
+	/**
+	 * Actual 'store' operation to the storage driver
+	 */
+	private async writeStore(): Promise<void> {
+		this.logMessage('store', `store: size=${this.cache.size}`);
 		this.isWriting = true; // lock updates from driver as we are writing
 		await this.driver.store(this.cache);
 		// release the write lock after 100ms
@@ -210,7 +341,7 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 		}, 100);
 	}
 
-	private async cleanExpired(): Promise<void> {
+	private handleExpires(): Map<Key, Payload> {
 		const deleteData = new Map<Key, Payload>();
 		const now = new Date().getTime();
 		for (const [key, value] of this.cache.entries()) {
@@ -219,18 +350,31 @@ export class TachyonExpireCache<Payload, Key = string> extends MapLogger<ExpireC
 				this.cache.delete(key);
 			}
 		}
-		if (deleteData.size > 0) {
-			this.logMessage('cleanExpired', `expired count: ${deleteData.size}`);
-			await this.handleStore();
-			await this.notifyClear(deleteData);
-		}
+		return deleteData;
 	}
 
 	private async notifyClear(deleteData: Map<Key, Payload>): Promise<void> {
-		await Promise.all(Array.from(this.onClearCallbacks).map((callback) => callback(deleteData)));
+		await Promise.all(this.onClearCallbacks.map((callback) => callback?.(deleteData)));
+	}
+
+	private testBandwidth(limit: TachyonBandwidth): boolean {
+		return this.driver.bandwidth <= limit;
 	}
 
 	private logMessage(key: keyof ExpireCacheLogMapType, message: string): void {
-		this.logKey(key, `TachyonExpireCache[${this.name}]: ${message}`);
+		this.logKey(key, `${this.constructor.name}[${this.name}]: ${message}`);
+	}
+
+	public toString(): string {
+		return `${this.constructor.name}[${this.name}], driver: ${this.driver.name}, size: ${this.cache.size}, defaultExpireMs: ${this.defaultExpireMs}`;
+	}
+
+	public toJSON(): {defaultExpireMs: number | undefined; driver: string; name: string; size: number} {
+		return {
+			defaultExpireMs: this.defaultExpireMs,
+			driver: this.driver.name,
+			name: this.name,
+			size: this.cache.size,
+		};
 	}
 }
