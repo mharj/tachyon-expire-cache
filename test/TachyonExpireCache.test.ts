@@ -57,6 +57,7 @@ function cachePayloadSchema<T>(data: z.Schema<T>) {
 }
 
 const bufferSerializer: IPersistSerializer<CacheMap<string, string>, Buffer> = {
+	name: 'BufferSerializer',
 	serialize: (data: CacheMap<string, string>) => Buffer.from(JSON.stringify(Array.from(data))),
 	deserialize: (buffer: Buffer) => new Map(JSON.parse(buffer.toString())),
 	validator: (data: CacheMap<string, string>) => z.map(z.string(), cachePayloadSchema(z.string())).safeParse(data).success,
