@@ -10,7 +10,7 @@
 		"standard",
 		"eslint:recommended",
 		"plugin:@typescript-eslint/eslint-recommended",
-		"plugin:@typescript-eslint/recommended",
+		"plugin:@typescript-eslint/strict-type-checked",
 		"plugin:prettier/recommended",
 		"plugin:sonarjs/recommended"
 	],
@@ -53,6 +53,14 @@
 				"exceptAfterSingleLine": true
 			}
 		],
-		"@typescript-eslint/consistent-type-imports": ["warn", {"prefer": "type-imports", "fixStyle": "inline-type-imports"}]
+		"@typescript-eslint/consistent-type-imports": ["warn", {"prefer": "type-imports", "fixStyle": "inline-type-imports"}],
+		"@typescript-eslint/no-misused-promises": [
+			"error",
+			{
+				"checksVoidReturn": false
+			}
+		],
+		"@typescript-eslint/unbound-method": "off",
+		"@typescript-eslint/no-confusing-void-expression": "off"
 	}
 }

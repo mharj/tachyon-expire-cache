@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/restrict-template-expressions */
+/* eslint-disable @typescript-eslint/no-unsafe-argument */
 /* eslint-disable no-unused-expressions */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import 'mocha';
@@ -56,11 +58,11 @@ function cachePayloadSchema<T>(data: z.Schema<T>) {
 	});
 }
 
-const bufferSerializer: IPersistSerializer<CacheMap<string, string>, Buffer> = {
+const bufferSerializer: IPersistSerializer<CacheMap<string>, Buffer> = {
 	name: 'BufferSerializer',
-	serialize: (data: CacheMap<string, string>) => Buffer.from(JSON.stringify(Array.from(data))),
+	serialize: (data: CacheMap<string>) => Buffer.from(JSON.stringify(Array.from(data))),
 	deserialize: (buffer: Buffer) => new Map(JSON.parse(buffer.toString())),
-	validator: (data: CacheMap<string, string>) => z.map(z.string(), cachePayloadSchema(z.string())).safeParse(data).success,
+	validator: (data: CacheMap<string>) => z.map(z.string(), cachePayloadSchema(z.string())).safeParse(data).success,
 };
 
 const options = {logger: spyLogger, logMapping: testLogMap};
@@ -69,7 +71,7 @@ const fastDriver = new FileStorageDriver('FileStorageDriver', {fileName: './cach
 
 const slowDriver = new FileStorageDriver('FileStorageDriver', {fileName: './cache-test.json', bandwidth: TachyonBandwidth.VerySmall}, bufferSerializer);
 
-let cache: TachyonExpireCache<string, string>;
+let cache: TachyonExpireCache<string>;
 
 describe('TachyonExpireCache', () => {
 	describe('fast driver', function () {
@@ -182,10 +184,10 @@ describe('TachyonExpireCache', () => {
 			await cache.clear();
 			expect(onClearSpy.callCount).to.be.eq(1);
 		});
-		it('should get toString()', async () => {
+		it('should get toString()', () => {
 			expect(cache.toString()).to.be.eq('TachyonExpireCache[Unit-Test], driver: FileStorageDriver, size: 0, defaultExpireMs: undefined');
 		});
-		it('should get toJSON()', async () => {
+		it('should get toJSON()', () => {
 			expect(JSON.stringify(cache.toJSON())).to.be.eq('{"driver":"FileStorageDriver","name":"Unit-Test","size":0}');
 		});
 		after(async () => {
