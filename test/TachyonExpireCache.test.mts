@@ -2,12 +2,10 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 /* eslint-disable no-unused-expressions */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import 'mocha';
-import {type CacheMap, type ExpireCacheLogMapType, TachyonExpireCache} from '../src';
+import {afterAll, beforeAll, beforeEach, describe, expect, it} from 'vitest';
+import {type CacheMap, type ExpireCacheLogMapType, TachyonExpireCache} from '../src/index.mjs';
 import {type ILoggerLike, LogLevel} from '@avanio/logger-like';
 import {type IPersistSerializer, TachyonBandwidth} from 'tachyon-drive';
-import chai from 'chai';
-import chaiAsPromised from 'chai-as-promised';
 import {FileStorageDriver} from 'tachyon-drive-node-fs';
 import sinon from 'sinon';
 import {z} from 'zod';
@@ -45,10 +43,6 @@ const spyLogger = {
 	warn: logSpy,
 } satisfies ILoggerLike;
 
-chai.use(chaiAsPromised);
-
-const expect = chai.expect;
-
 const onClearSpy = sinon.spy();
 
 function cachePayloadSchema<T>(data: z.Schema<T>) {
@@ -75,42 +69,57 @@ let cache: TachyonExpireCache<string>;
 
 describe('TachyonExpireCache', () => {
 	describe('fast driver', function () {
-		before(async () => {
+		beforeAll(async () => {
 			await fastDriver.clear();
 			cache = new TachyonExpireCache<string, string>('Unit-Test', fastDriver, options);
-			cache.onClear(onClearSpy);
+			cache.on('clear', onClearSpy);
 		});
 		beforeEach(() => {
 			onClearSpy.resetHistory();
 			logSpy.resetHistory();
 		});
-		it('should return undefined value if not cached yet', async () => {
-			await expect(cache.get('key')).to.eventually.be.undefined;
-			expect(onClearSpy.callCount).to.be.eq(0);
+		it('should init cache', async () => {
+			await cache.init();
 			expect(logSpy.callCount).to.be.eq(2);
-			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: hydrate`);
-			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
+			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: initialize cache`);
+			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: hydrate`);
+		});
+		it('should return undefined value if not cached yet', async () => {
+			await expect(cache.get('key')).resolves.toEqual(undefined);
+			expect(onClearSpy.callCount).to.be.eq(0);
+			expect(logSpy.callCount).to.be.eq(1);
+			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
 		});
 		it('should store value to cache 1.', async () => {
 			await cache.set('key', 'value');
 			expect(logSpy.callCount).to.be.eq(2);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: set key: 'key', expireTs: undefined`);
 			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: store: size=1`);
+			for await (const [key, value] of cache.entries()) {
+				expect(key).to.be.eq('key');
+				expect(value).to.be.eq('value');
+			}
+			for await (const key of cache.keys()) {
+				expect(key).to.be.eq('key');
+			}
+			for await (const value of cache.values()) {
+				expect(value).to.be.eq('value');
+			}
 		});
 		it('should return cached value', async () => {
-			await expect(cache.get('key')).to.eventually.be.equal('value');
+			await expect(cache.get('key')).resolves.toEqual('value');
 			expect(onClearSpy.callCount).to.be.eq(0);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
 		});
 		it('should check that key exists', async () => {
-			await expect(cache.has('key')).to.eventually.be.equal(true);
+			await expect(cache.has('key')).resolves.toEqual(true);
 			expect(onClearSpy.callCount).to.be.eq(0);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: has key: 'key'`);
 		});
 		it('should check cache size', async () => {
-			await expect(cache.size()).to.eventually.be.equal(1);
+			await expect(cache.size()).resolves.toEqual(1);
 			expect(onClearSpy.callCount).to.be.eq(0);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: size: 1`);
@@ -126,7 +135,7 @@ describe('TachyonExpireCache', () => {
 			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: store: size=1`);
 		});
 		it('should return undefined value if expired', async () => {
-			await expect(cache.get('key')).to.eventually.be.undefined;
+			await expect(cache.get('key')).resolves.toEqual(undefined);
 			expect(onClearSpy.callCount).to.be.eq(1);
 			expect(logSpy.callCount).to.be.eq(3);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
@@ -140,14 +149,15 @@ describe('TachyonExpireCache', () => {
 			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: store: size=1`);
 		});
 		it('should delete value from cache', async () => {
-			expect(await cache.delete('key')).to.be.true;
+			expect(await cache.delete('key')).to.be.eq(true);
 			expect(logSpy.callCount).to.be.eq(2);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: delete key: 'key'`);
 			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: store: size=0`);
 			expect(onClearSpy.callCount).to.be.eq(1);
+			expect(await cache.delete('key')).to.be.eq(false);
 		});
 		it('should return undefined value if deleted', async () => {
-			await expect(cache.get('key')).to.eventually.be.undefined;
+			await expect(cache.get('key')).resolves.toEqual(undefined);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
 		});
@@ -165,15 +175,15 @@ describe('TachyonExpireCache', () => {
 			expect(onClearSpy.callCount).to.be.eq(1);
 		});
 		it('should return undefined value if cleared', async () => {
-			await expect(cache.get('key')).to.eventually.be.undefined;
+			await expect(cache.get('key')).resolves.toEqual(undefined);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
 		});
 		it('should restore state and return cached value', async () => {
 			await cache.set('key', 'value');
 			cache = new TachyonExpireCache<string, string>('Unit-Test', fastDriver, options);
-			cache.onClear(onClearSpy);
-			await expect(cache.get('key')).to.eventually.be.equal('value');
+			cache.on('clear', onClearSpy);
+			await expect(cache.get('key')).resolves.toEqual('value');
 			expect(onClearSpy.callCount).to.be.eq(0);
 		});
 		it('should return valid entry expire Date', async () => {
@@ -190,20 +200,20 @@ describe('TachyonExpireCache', () => {
 		it('should get toJSON()', () => {
 			expect(JSON.stringify(cache.toJSON())).to.be.eq('{"driver":"FileStorageDriver","name":"Unit-Test","size":0}');
 		});
-		after(async () => {
+		afterAll(async () => {
 			await fastDriver.clear();
 			await cache.close();
 		});
 	});
 	describe('slow driver', function () {
-		before(async () => {
+		beforeAll(async () => {
 			// setup initial data to cache (use fast driver to store expired data)
 			await slowDriver.clear();
 			cache = new TachyonExpireCache<string, string>('Unit-Test', slowDriver, options);
 			await cache.set('key', 'value', new Date(Date.now() + 200)); // expire soon
 			await cache.close();
 			cache = new TachyonExpireCache<string, string>('Unit-Test', slowDriver, options);
-			cache.onClear(onClearSpy);
+			cache.on('clear', onClearSpy);
 			await sleep(500);
 		});
 		beforeEach(() => {
@@ -211,7 +221,7 @@ describe('TachyonExpireCache', () => {
 			logSpy.resetHistory();
 		});
 		it('should return undefined value if not cached yet', async () => {
-			await expect(cache.get('key')).to.eventually.be.undefined;
+			await expect(cache.get('key')).resolves.toEqual(undefined);
 			expect(onClearSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: hydrate`);
 			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: hydrate rebuild Cache Map: size=1`);
@@ -227,19 +237,19 @@ describe('TachyonExpireCache', () => {
 			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: store: size=1`);
 		});
 		it('should return cached value', async () => {
-			await expect(cache.get('key')).to.eventually.be.equal('value');
+			await expect(cache.get('key')).resolves.toEqual('value');
 			expect(onClearSpy.callCount).to.be.eq(0);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
 		});
 		it('should check that key exists', async () => {
-			await expect(cache.has('key')).to.eventually.be.equal(true);
+			await expect(cache.has('key')).resolves.toEqual(true);
 			expect(onClearSpy.callCount).to.be.eq(0);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: has key: 'key'`);
 		});
 		it('should check cache size', async () => {
-			await expect(cache.size()).to.eventually.be.equal(1);
+			await expect(cache.size()).resolves.toEqual(1);
 			expect(onClearSpy.callCount).to.be.eq(0);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: size: 1`);
@@ -255,7 +265,7 @@ describe('TachyonExpireCache', () => {
 			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: store: size=1`);
 		});
 		it('should return undefined value if expired', async () => {
-			await expect(cache.get('key')).to.eventually.be.undefined;
+			await expect(cache.get('key')).resolves.toEqual(undefined);
 			expect(onClearSpy.callCount).to.be.eq(1);
 			expect(logSpy.callCount).to.be.eq(2);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
@@ -268,14 +278,14 @@ describe('TachyonExpireCache', () => {
 			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: store: size=1`);
 		});
 		it('should delete value from cache', async () => {
-			expect(await cache.delete('key')).to.be.true;
+			expect(await cache.delete('key')).to.be.eq(true);
 			expect(logSpy.callCount).to.be.eq(2);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: delete key: 'key'`);
 			expect(logSpy.getCall(1).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: store: size=0`);
 			expect(onClearSpy.callCount).to.be.eq(1);
 		});
 		it('should return undefined value if deleted', async () => {
-			await expect(cache.get('key')).to.eventually.be.undefined;
+			await expect(cache.get('key')).resolves.toEqual(undefined);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
 		});
@@ -293,15 +303,15 @@ describe('TachyonExpireCache', () => {
 			expect(onClearSpy.callCount).to.be.eq(1);
 		});
 		it('should return undefined value if cleared', async () => {
-			await expect(cache.get('key')).to.eventually.be.undefined;
+			await expect(cache.get('key')).resolves.toEqual(undefined);
 			expect(logSpy.callCount).to.be.eq(1);
 			expect(logSpy.getCall(0).args[0]).to.be.eq(`TachyonExpireCache[Unit-Test]: get with key: 'key'`);
 		});
 		it('should restore state and return cached value', async () => {
 			await cache.set('key', 'value');
 			cache = new TachyonExpireCache<string, string>('Unit-Test', slowDriver, options);
-			cache.onClear(onClearSpy);
-			await expect(cache.get('key')).to.eventually.be.equal('value');
+			cache.on('clear', onClearSpy);
+			await expect(cache.get('key')).resolves.toEqual('value');
 			expect(onClearSpy.callCount).to.be.eq(0);
 		});
 		it('should return valid entry expire Date', async () => {
@@ -312,7 +322,7 @@ describe('TachyonExpireCache', () => {
 			await cache.clear();
 			expect(onClearSpy.callCount).to.be.eq(1);
 		});
-		after(async () => {
+		afterAll(async () => {
 			await fastDriver.clear();
 			expect(onClearSpy.callCount).to.be.eq(1);
 			await cache.close();

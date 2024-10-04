@@ -1,6 +1,7 @@
-import {type IAsyncCache, type IAsyncCacheOnClearCallback} from '@avanio/expire-cache';
+import {type CacheEventsMap, type IAsyncCache} from '@luolapeikko/cache-types';
 import {type ILoggerLike, LogLevel, type LogMapping, MapLogger} from '@avanio/logger-like';
 import {type IStorageDriver, TachyonBandwidth} from 'tachyon-drive';
+import EventEmitter from 'node:events';
 import {toError} from '@luolapeikko/ts-common';
 
 /**
@@ -59,7 +60,7 @@ export type TachyonExpireCacheOptions = {
  *
  * Data is stored as a ```CacheMap<Payload, Key = string>``` if building validation for serialization.
  */
-export class TachyonExpireCache<Payload, Key extends string = string> extends MapLogger<ExpireCacheLogMapType> implements IAsyncCache<Payload, Key> {
+export class TachyonExpireCache<Payload, Key extends string = string> extends EventEmitter<CacheEventsMap<Payload, Key>> implements IAsyncCache<Payload, Key> {
 	public readonly name: string;
 	private cache = new Map<Key, CachePayload<Payload>>();
 	private defaultExpireMs: undefined | number;
@@ -67,10 +68,11 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 	private isHydrated = false;
 	private isWriting = false;
 	private hydratePromise: Promise<CacheMap<Payload, Key> | undefined> | CacheMap<Payload, Key> | undefined;
-	private onClearCallbacks: (IAsyncCacheOnClearCallback<Payload, Key> | undefined)[] = [];
+	private logger: MapLogger<ExpireCacheLogMapType>;
 
 	constructor(name: string, driver: IStorageDriver<CacheMap<Payload, Key>>, {logger, logMapping, defaultExpireMs}: TachyonExpireCacheOptions = {}) {
-		super(logger, Object.assign({}, defaultLogMap, logMapping));
+		super();
+		this.logger = new MapLogger(logger, Object.assign({}, defaultLogMap, logMapping));
 		this.name = name;
 		this.driver = driver;
 		this.defaultExpireMs = defaultExpireMs;
@@ -84,25 +86,6 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 			}
 		});
 		this.doInitialHydrate = this.doInitialHydrate.bind(this);
-	}
-
-	/**
-	 * Add a callback to be called when the cache is cleared
-	 * @param callback - the callback to call when the cache is cleared
-	 * @returns number - callback index to use for offClear(index)
-	 */
-	public onClear(callback: IAsyncCacheOnClearCallback<Payload, Key>): number {
-		const index = this.onClearCallbacks.length;
-		this.onClearCallbacks.push(callback);
-		return index;
-	}
-
-	/**
-	 * Remove a callback that was added with onClear
-	 * @param index - the index of the callback to remove
-	 */
-	public offClear(index: number): void {
-		this.onClearCallbacks[index] = undefined;
 	}
 
 	/**
@@ -148,7 +131,9 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 		await this.doInitialHydrate();
 		this.logMessage('get', `get with key: '${key}'`);
 		await this.cleanExpired(TachyonBandwidth.Small);
-		return this.cache.get(key)?.data;
+		const data = this.cache.get(key)?.data;
+		this.emit('get', key);
+		return data;
 	}
 
 	/**
@@ -159,11 +144,12 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 	 * @param expires - the expiration date of the key (optional)
 	 * @returns Promise<void> - resolves when the key is set
 	 */
-	public async set(key: Key, data: Payload, expires?: Date | undefined): Promise<void> {
+	public async set(key: Key, data: Payload, expires?: Date): Promise<void> {
 		await this.doInitialHydrate();
 		const expireTs: number | undefined = expires?.getTime() ?? (this.defaultExpireMs && Date.now() + this.defaultExpireMs);
 		this.logMessage('set', `set key: '${key}', expireTs: ${expireTs?.toString() ?? 'undefined'}`);
 		this.cache.set(key, {data, expires: expireTs});
+		this.emit('set', key, data, expires);
 		await this.handleStore(TachyonBandwidth.VerySmall);
 	}
 
@@ -180,8 +166,9 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 		if (value) {
 			const isDeleted = this.cache.delete(key);
 			if (isDeleted) {
+				this.emit('delete', key);
 				await this.handleStore(TachyonBandwidth.VerySmall);
-				await this.notifyClear(new Map<Key, Payload>([[key, value.data]]));
+				this.notifyClear(new Map<Key, Payload>([[key, value.data]]));
 			}
 			return isDeleted;
 		}
@@ -198,6 +185,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 		await this.doInitialHydrate();
 		this.logMessage('has', `has key: '${key}'`);
 		await this.cleanExpired(TachyonBandwidth.Normal);
+		this.emit('has', key);
 		return this.cache.has(key);
 	}
 
@@ -225,7 +213,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 		const deleteData = this.buildFlatDataMap();
 		this.logMessage('clear', `clear: ${deleteData.size.toString()} keys`);
 		this.cache.clear();
-		await this.notifyClear(deleteData);
+		this.notifyClear(deleteData);
 		return this.handleStore(TachyonBandwidth.VerySmall);
 	}
 
@@ -314,7 +302,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 		}
 		if (deleteData.size > 0) {
 			this.logMessage('cleanExpired', `expired count: ${deleteData.size.toString()}`);
-			await this.notifyClear(deleteData);
+			this.notifyClear(deleteData);
 		}
 	}
 
@@ -325,7 +313,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 			if (this.testBandwidth(limit)) {
 				await this.writeStore();
 			}
-			await this.notifyClear(deleteData);
+			this.notifyClear(deleteData);
 		}
 	}
 
@@ -354,8 +342,8 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 		return deleteData;
 	}
 
-	private async notifyClear(deleteData: Map<Key, Payload>): Promise<void> {
-		await Promise.all(this.onClearCallbacks.map((callback) => callback?.(deleteData)));
+	private notifyClear(deleteData: Map<Key, Payload>): void {
+		this.emit('clear', deleteData);
 	}
 
 	private testBandwidth(limit: TachyonBandwidth): boolean {
@@ -363,7 +351,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ma
 	}
 
 	private logMessage(key: keyof ExpireCacheLogMapType, message: string): void {
-		this.logKey(key, `${this.constructor.name}[${this.name}]: ${message}`);
+		this.logger.logKey(key, `${this.constructor.name}[${this.name}]: ${message}`);
 	}
 
 	public toString(): string {
