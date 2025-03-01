@@ -1,14 +1,10 @@
-/* eslint-disable @typescript-eslint/restrict-template-expressions */
-/* eslint-disable @typescript-eslint/no-unsafe-argument */
-/* eslint-disable no-unused-expressions */
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import {afterAll, beforeAll, beforeEach, describe, expect, it} from 'vitest';
-import {type CacheMap, type ExpireCacheLogMapType, TachyonExpireCache} from '../src/index.mjs';
 import {type ILoggerLike, LogLevel} from '@avanio/logger-like';
+import sinon from 'sinon';
 import {type IPersistSerializer, TachyonBandwidth} from 'tachyon-drive';
 import {FileStorageDriver} from 'tachyon-drive-node-fs';
-import sinon from 'sinon';
+import {afterAll, beforeAll, beforeEach, describe, expect, it} from 'vitest';
 import {z} from 'zod';
+import {type CacheMap, type ExpireCacheLogMapType, TachyonExpireCache} from '../src/index.mjs';
 
 function sleep(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));

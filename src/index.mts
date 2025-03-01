@@ -1,8 +1,8 @@
-import {type CacheEventsMap, type IAsyncCache} from '@luolapeikko/cache-types';
-import {type ILoggerLike, LogLevel, type LogMapping, MapLogger} from '@avanio/logger-like';
-import {type IStorageDriver, TachyonBandwidth} from 'tachyon-drive';
 import EventEmitter from 'node:events';
+import {type ILoggerLike, LogLevel, type LogMapInfer, MapLogger} from '@avanio/logger-like';
+import {type CacheEventsMap, type IAsyncCache} from '@luolapeikko/cache-types';
 import {toError} from '@luolapeikko/ts-common';
+import {type IStorageDriver, TachyonBandwidth} from 'tachyon-drive';
 
 /**
  * IterableIterator to AsyncIterableIterator
@@ -41,9 +41,9 @@ const defaultLogMap = {
 	store: LogLevel.None,
 	update: LogLevel.None,
 	values: LogLevel.None,
-} satisfies LogMapping;
+} as const;
 
-export type ExpireCacheLogMapType = LogMapping<keyof typeof defaultLogMap>;
+export type ExpireCacheLogMapType = LogMapInfer<typeof defaultLogMap>;
 
 export type CachePayload<Payload> = {data: Payload; expires: number | undefined};
 
@@ -241,6 +241,19 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 		await this.doInitialHydrate();
 	}
 
+	public toString(): string {
+		return `${this.constructor.name}[${this.name}], driver: ${this.driver.name}, size: ${this.cache.size.toString()}, defaultExpireMs: ${this.defaultExpireMs?.toString() ?? 'undefined'}`;
+	}
+
+	public toJSON(): {defaultExpireMs: number | undefined; driver: string; name: string; size: number} {
+		return {
+			defaultExpireMs: this.defaultExpireMs,
+			driver: this.driver.name,
+			name: this.name,
+			size: this.cache.size,
+		};
+	}
+
 	private buildFlatDataMap(): Map<Key, Payload> {
 		return new Map(Array.from(this.cache.entries()).map(([key, value]) => [key, value.data]));
 	}
@@ -352,18 +365,5 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 
 	private logMessage(key: keyof ExpireCacheLogMapType, message: string): void {
 		this.logger.logKey(key, `${this.constructor.name}[${this.name}]: ${message}`);
-	}
-
-	public toString(): string {
-		return `${this.constructor.name}[${this.name}], driver: ${this.driver.name}, size: ${this.cache.size.toString()}, defaultExpireMs: ${this.defaultExpireMs?.toString() ?? 'undefined'}`;
-	}
-
-	public toJSON(): {defaultExpireMs: number | undefined; driver: string; name: string; size: number} {
-		return {
-			defaultExpireMs: this.defaultExpireMs,
-			driver: this.driver.name,
-			name: this.name,
-			size: this.cache.size,
-		};
 	}
 }
