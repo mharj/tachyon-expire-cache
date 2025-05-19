@@ -1,14 +1,15 @@
 import EventEmitter from 'node:events';
 import {type ILoggerLike, LogLevel, type LogMapInfer, MapLogger} from '@avanio/logger-like';
 import {type CacheEventsMap, type IAsyncCache} from '@luolapeikko/cache-types';
-import {toError} from '@luolapeikko/ts-common';
+import {type Nullish, toError} from '@luolapeikko/ts-common';
 import {type IStorageDriver, TachyonBandwidth} from 'tachyon-drive';
 
 /**
  * IterableIterator to AsyncIterableIterator
- * @param callIterable get the iterable iterator
- * @param initialize callback to initialize storage driver (before get the iterable)
- * @returns AsyncIterableIterator
+ * @template T - IterableIterator type
+ * @param {() => IterableIterator<T>} callIterable get the iterable iterator
+ * @param {() => Promise<void>} initialize callback to initialize storage driver (before get the iterable)
+ * @returns {AsyncIterableIterator<T>} AsyncIterableIterator
  */
 function toAsyncIterableIterator<T>(callIterable: () => IterableIterator<T>, initialize: () => Promise<void>): AsyncIterableIterator<T> {
 	return (async function* () {
@@ -59,6 +60,9 @@ export type TachyonExpireCacheOptions = {
  * TachyonExpireCache implements IAsyncCache using a Tachyon storage driver to persist the cache.
  *
  * Data is stored as a ```CacheMap<Payload, Key = string>``` if building validation for serialization.
+ * @template Payload - The type of the data payload
+ * @template Key - The type of the store key, defaults to string
+ * @since v0.0.1
  */
 export class TachyonExpireCache<Payload, Key extends string = string> extends EventEmitter<CacheEventsMap<Payload, Key>> implements IAsyncCache<Payload, Key> {
 	public readonly name: string;
@@ -68,7 +72,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	private isHydrated = false;
 	private isWriting = false;
 	private hydratePromise: Promise<CacheMap<Payload, Key> | undefined> | CacheMap<Payload, Key> | undefined;
-	private logger: MapLogger<ExpireCacheLogMapType>;
+	public readonly logger: MapLogger<ExpireCacheLogMapType>;
 
 	constructor(name: string, driver: IStorageDriver<CacheMap<Payload, Key>>, {logger, logMapping, defaultExpireMs}: TachyonExpireCacheOptions = {}) {
 		super();
@@ -76,21 +80,16 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 		this.name = name;
 		this.driver = driver;
 		this.defaultExpireMs = defaultExpireMs;
-		this.driver.on('update', async (data) => {
-			if (!this.isWriting && data) {
-				try {
-					await this.handleUpdate(data);
-				} catch (error) {
-					this.logMessage('update', `update error: ${toError(error).message}`);
-				}
-			}
+		this.handleUpdate = this.handleUpdate.bind(this);
+		this.driver.on('update', (data) => {
+			void this.handleUpdate(data);
 		});
 		this.doInitialHydrate = this.doInitialHydrate.bind(this);
 	}
 
 	/**
 	 * Get an AsyncIterableIterator of Cache entries
-	 * @returns AsyncIterableIterator<[Key, Payload]>
+	 * @returns {AsyncIterableIterator<[Key, Payload]>} - AsyncIterableIterator
 	 * @example
 	 * for await (const [key, value] of cache.entries()) {}
 	 */
@@ -101,7 +100,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 
 	/**
 	 * Get an AsyncIterableIterator of Cache keys
-	 * @returns AsyncIterableIterator<Key>
+	 * @returns {AsyncIterableIterator<Key>} - AsyncIterableIterator
 	 * @example
 	 * for await (const key of cache.keys()) {}
 	 */
@@ -112,7 +111,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 
 	/**
 	 * Get an AsyncIterableIterator of Cache values
-	 * @returns AsyncIterableIterator<Payload>
+	 * @returns {AsyncIterableIterator<Payload>} - AsyncIterableIterator
 	 * @example
 	 * for await (const value of cache.values()) {}
 	 */
@@ -124,8 +123,8 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	/**
 	 * Get a value from the cache
 	 * - cleanExpires: TachyonBandwidth.Small (small or higher driver bandwidth)
-	 * @param key - the Cache key to get
-	 * @returns Promise<Payload | undefined> - resolves with the value of the key or undefined if the key does not exist
+	 * @param {Key} key - the Cache key to get
+	 * @returns {Promise<Payload | undefined>} - resolves with the value of the key or undefined if the key does not exist
 	 */
 	public async get(key: Key): Promise<Payload | undefined> {
 		await this.doInitialHydrate();
@@ -139,10 +138,10 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	/**
 	 * Set a key in the cache
 	 * - stores: TachyonBandwidth.VerySmall (any driver bandwidth)
-	 * @param key - the Cache key to set
-	 * @param data - the data to set for the key
-	 * @param expires - the expiration date of the key (optional)
-	 * @returns Promise<void> - resolves when the key is set
+	 * @param {Key} key - the Cache key to set
+	 * @param {Payload} data - the data to set for the key
+	 * @param {Date} expires - the expiration date of the key (optional)
+	 * @returns {Promise<void>} - resolves when the key is set
 	 */
 	public async set(key: Key, data: Payload, expires?: Date): Promise<void> {
 		await this.doInitialHydrate();
@@ -156,8 +155,8 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	/**
 	 * Delete a key from the cache
 	 * - stores: TachyonBandwidth.VerySmall (any driver bandwidth)
-	 * @param key - the Cache key to delete
-	 * @returns Promise<boolean> - resolves with true if the key was deleted
+	 * @param {Key} key - the Cache key to delete
+	 * @returns {Promise<boolean>} - resolves with true if the key was deleted
 	 */
 	public async delete(key: Key): Promise<boolean> {
 		await this.doInitialHydrate();
@@ -178,8 +177,8 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	/**
 	 * Check if a key exists in the cache
 	 * - cleanExpires: TachyonBandwidth.Normal (normal or higher driver bandwidth)
-	 * @param key - the Cache key to check for
-	 * @returns Promise<boolean> - resolves with true if the key exists in the cache
+	 * @param {Key} key - the Cache key to check for
+	 * @returns {Promise<boolean>} - resolves with true if the key exists in the cache
 	 */
 	public async has(key: Key): Promise<boolean> {
 		await this.doInitialHydrate();
@@ -192,8 +191,8 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	/**
 	 * Get the expiration date of a key
 	 * - cleanExpires: TachyonBandwidth.Normal (normal or higher driver bandwidth)
-	 * @param key - the Cache key to get the expiration date for
-	 * @returns Promise<Date | undefined> - resolves with the expiration date of the key or undefined if the key does not expire
+	 * @param {Key} key - the Cache key to get the expiration date for
+	 * @returns {Promise<Date | undefined>} - resolves with the expiration date of the key or undefined if the key does not expire
 	 */
 	public async expires(key: Key): Promise<Date | undefined> {
 		await this.doInitialHydrate();
@@ -206,7 +205,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	/**
 	 * Clear the cache
 	 * - stores: TachyonBandwidth.VerySmall (any driver bandwidth)
-	 * @returns Promise<void> - resolves when the cache is cleared
+	 * @returns {Promise<void>} - resolves when the cache is cleared
 	 */
 	public async clear(): Promise<void> {
 		await this.doInitialHydrate();
@@ -225,7 +224,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 
 	/**
 	 * Close the cache
-	 * @returns Promise<void> - resolves when the cache is closed
+	 * @returns {Promise<void>} - resolves when the cache is closed
 	 */
 	public async close(): Promise<void> {
 		this.logMessage('close', 'close cache');
@@ -280,21 +279,27 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 
 	/**
 	 * Handle the update event from the driver and merge the data into the cache
-	 * @param data - the data to update the cache with
+	 * @param {Nullish<CacheMap<Payload, Key>>} data - the data to update the cache with
 	 */
-	private async handleUpdate(data: CacheMap<Payload, Key>) {
-		let isModified = false;
-		for (const [key, value] of data.entries()) {
-			const cacheValue = this.cache.get(key);
-			// only update if the value is undefined or the expires value has changed
-			if (!cacheValue || cacheValue.expires !== value.expires) {
-				isModified = true;
-				this.cache.set(key, value);
+	private async handleUpdate(data: Nullish<CacheMap<Payload, Key>>) {
+		if (!this.isWriting && data) {
+			try {
+				let isModified = false;
+				for (const [key, value] of data.entries()) {
+					const cacheValue = this.cache.get(key);
+					// only update if the value is undefined or the expires value has changed
+					if (!cacheValue || cacheValue.expires !== value.expires) {
+						isModified = true;
+						this.cache.set(key, value);
+					}
+				}
+				if (isModified) {
+					this.logMessage('update', 'update Cache Map');
+					await this.handleStore(TachyonBandwidth.VerySmall);
+				}
+			} catch (error) {
+				this.logMessage('update', `update error: ${toError(error).message}`);
 			}
-		}
-		if (isModified) {
-			this.logMessage('update', 'update Cache Map');
-			await this.handleStore(TachyonBandwidth.VerySmall);
 		}
 	}
 
@@ -306,7 +311,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	/**
 	 * this function will handle the store operation
 	 * - if the bandwidth is VerySmall, it will do cleanup to expired data (minimize write operations)
-	 * @param limit - the bandwidth limit to use for the store operation
+	 * @param {TachyonBandwidth} limit - the bandwidth limit to use for the store operation
 	 */
 	private async handleStore(limit: TachyonBandwidth): Promise<void> {
 		const deleteData = this.handleExpires();
