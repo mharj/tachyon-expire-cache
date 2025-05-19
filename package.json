@@ -1,6 +1,6 @@
 {
     "name": "tachyon-expire-cache",
-    "version": "0.11.0",
+    "version": "0.11.1",
     "description": "tachyon drive enabled async cache with expire support",
     "main": "./dist/index.js",
     "module": "./dist/index.mjs",
