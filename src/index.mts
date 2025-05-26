@@ -1,4 +1,4 @@
-import EventEmitter from 'node:events';
+import {EventEmitter} from 'events';
 import {type ILoggerLike, LogLevel, type LogMapInfer, MapLogger} from '@avanio/logger-like';
 import {type CacheEventsMap, type IAsyncCache} from '@luolapeikko/cache-types';
 import {type Nullish, toError} from '@luolapeikko/ts-common';
@@ -241,7 +241,7 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	}
 
 	public toString(): string {
-		return `${this.constructor.name}[${this.name}], driver: ${this.driver.name}, size: ${this.cache.size.toString()}, defaultExpireMs: ${this.defaultExpireMs?.toString() ?? 'undefined'}`;
+		return `TachyonExpireCache[${this.name}], driver: ${this.driver.name}, size: ${this.cache.size.toString()}, defaultExpireMs: ${this.defaultExpireMs?.toString() ?? 'undefined'}`;
 	}
 
 	public toJSON(): {defaultExpireMs: number | undefined; driver: string; name: string; size: number} {
@@ -369,6 +369,6 @@ export class TachyonExpireCache<Payload, Key extends string = string> extends Ev
 	}
 
 	private logMessage(key: keyof ExpireCacheLogMapType, message: string): void {
-		this.logger.logKey(key, `${this.constructor.name}[${this.name}]: ${message}`);
+		this.logger.logKey(key, `TachyonExpireCache[${this.name}]: ${message}`);
 	}
 }
